@@ -46,7 +46,7 @@ const Game = {
   
   async init() {
     console.log('🚀 BONZOOKAA Exploration Mode initializing...');
-    console.log('BONZOOKAA BUILD v4.0.3-uiwirefix');
+    console.log('BONZOOKAA BUILD v4.0.4-uiwirefix2');
     
     // Setup canvas
     this.canvas = document.getElementById('gameCanvas');
@@ -195,7 +195,7 @@ const Game = {
         }
       }
     }
-  }
+  },
 
   // ========== UI / FLOW (wired to index.html onclick handlers) ==========
   showHub() {
