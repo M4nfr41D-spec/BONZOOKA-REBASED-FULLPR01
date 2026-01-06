@@ -46,6 +46,7 @@ const Game = {
   
   async init() {
     console.log('🚀 BONZOOKAA Exploration Mode initializing...');
+    console.log('BONZOOKAA BUILD v4.0.3-uiwirefix');
     
     // Setup canvas
     this.canvas = document.getElementById('gameCanvas');
@@ -100,6 +101,56 @@ const Game = {
     this.screenW = this.canvas.width;
     this.screenH = this.canvas.height;
   },
+  // ========== MAIN LOOP ==========
+  loop(t) {
+    const now = t;
+    const dt = Math.min(0.05, (now - (this.lastTime || now)) / 1000);
+    this.lastTime = now;
+
+    this.update(dt);
+    this.draw();
+
+    requestAnimationFrame((tt) => this.loop(tt));
+  },
+
+  update(dt) {
+    // Update scene transitions regardless of scene
+    SceneManager.updateTransition?.(dt);
+
+    const scene = SceneManager.getScene?.() || State.scene;
+    if (scene === 'combat' || scene === 'loading') {
+      // Systems update
+      Camera.update?.(dt, this.screenW, this.screenH);
+      World.update?.(dt, this.canvas);
+      Player.update?.(dt, this.canvas, true);
+      Enemies.update?.(dt, this.canvas);
+      Bullets.update?.(dt, this.canvas);
+      Pickups.update?.(dt, this.canvas);
+      Particles.update?.(dt, this.canvas);
+    }
+  },
+
+  draw() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+
+    // Clear
+    ctx.clearRect(0, 0, this.screenW, this.screenH);
+
+    const scene = SceneManager.getScene?.() || State.scene;
+    if (scene === 'combat' || scene === 'loading') {
+      World.draw?.(ctx, this.screenW, this.screenH);
+      Pickups.draw?.(ctx);
+      Enemies.draw?.(ctx);
+      Bullets.draw?.(ctx);
+      Player.draw?.(ctx);
+      Particles.draw?.(ctx);
+    }
+
+    // Transition overlay
+    SceneManager.drawTransition?.(ctx, this.screenW, this.screenH);
+  },
+
   
   addStarterItems() {
     const starterWeapon = Items.generate('laser_cannon', 'common');
@@ -145,6 +196,75 @@ const Game = {
       }
     }
   }
+
+  // ========== UI / FLOW (wired to index.html onclick handlers) ==========
+  showHub() {
+    // Hub is DOM-driven; just ensure correct visibility/state
+    SceneManager.currentScene = 'hub';
+    State.scene = 'hub';
+    State.run.inCombat = false;
+    SceneManager.showHubUI?.();
+    UI.renderAll?.();
+  },
+
+  start() {
+    // Start first unlocked act (default act1)
+    this.initActUnlocks();
+    const unlocked = State.meta.actsUnlocked || {};
+    const actId = unlocked.act1 ? 'act1' : (Object.keys(unlocked)[0] || 'act1');
+    SceneManager.startAct?.(actId);
+  },
+
+  toHub() {
+    SceneManager.goToHub?.();
+  },
+
+  restart() {
+    // 'Try again' from death screen: restart current act
+    const modal = document.getElementById('deathModal');
+    if (modal) modal.classList.remove('show');
+    this.initActUnlocks();
+    const actId = State.run.currentAct || (State.meta.actsUnlocked?.act1 ? 'act1' : (Object.keys(State.meta.actsUnlocked || {})[0] || 'act1'));
+    SceneManager.startAct?.(actId);
+  },
+
+  closeVendor() {
+    const modal = document.getElementById('vendorModal');
+    if (!modal) return;
+    modal.classList.remove('show');
+    modal.style.display = 'none';
+  },
+
+  debugAddItems() {
+    // Add a small pack of items for quick testing
+    const ids = Object.keys(State.data.items || {});
+    if (ids.length === 0) return;
+    const rarities = Object.keys(State.data.rarities || {});
+    for (let i = 0; i < 5; i++) {
+      const baseId = ids[(Math.random() * ids.length) | 0];
+      const rarity = rarities[(Math.random() * rarities.length) | 0] || 'common';
+      const item = Items.generate(baseId, rarity);
+      if (item) Items.addToStash(item);
+    }
+    Stats.calculate();
+    Save.save();
+    UI.renderAll();
+  },
+
+  debugAddResources() {
+    State.meta.scrap = (State.meta.scrap || 0) + 5000;
+    State.run.cells = (State.run.cells || 0) + 250;
+    Save.save();
+    UI.renderAll();
+  },
+
+  debugUnlockAll() {
+    const acts = Object.keys(State.data.acts || {});
+    State.meta.actsUnlocked = {};
+    for (const a of acts) State.meta.actsUnlocked[a] = true;
+    Save.save();
+    UI.renderAll();
+  },
 };
 
 // Global access
