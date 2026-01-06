@@ -43,8 +43,29 @@ export const Input = {
   },
   
   onKeyDown(e) {
+    // Dev hotkeys (deterministic zone stepping for representative test runs)
+    if (State.data.config?.debug?.devHotkeys && e.shiftKey) {
+      if (e.code === "KeyN") {
+        e.preventDefault();
+        const next = (State.world?.zoneIndex ?? 0) + 1;
+        State.modules.World?.loadZone?.(next);
+        return;
+      }
+      if (e.code === "KeyP") {
+        e.preventDefault();
+        const prev = Math.max(0, (State.world?.zoneIndex ?? 0) - 1);
+        State.modules.World?.loadZone?.(prev);
+        return;
+      }
+      if (e.code === "KeyL") {
+        e.preventDefault();
+        const z = State.world?.currentZone;
+        if (z) console.log("[ZONE_SUMMARY]", { idx: State.world?.zoneIndex, depth: z.depth, layout: z.layout?.id, backdrop: z.backdrop?.id, mods: (z.mods||[]).map(m => m.id || m), signature: z.signature, seeds: z.seeds });
+        return;
+      }
+    }
     const input = State.input;
-    
+
     switch (e.code) {
       case 'KeyW':
       case 'ArrowUp':

@@ -12,3 +12,5 @@ export { MapGenerator } from './MapGenerator.js';
 export { World } from './World.js';
 export { SceneManager } from './SceneManager.js';
 export { DepthRules } from './DepthRules.js';
+
+export * from './Freshness.js';
