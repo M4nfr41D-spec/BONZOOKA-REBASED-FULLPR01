@@ -13,7 +13,6 @@ import { SeededRandom } from './SeededRandom.js';
 import { DepthRules } from './DepthRules.js';
 import { SpawnGrid } from './SpawnGrid.js';
 import { seedFromParts } from './SeedUtil.js';
-import { Freshness } from './Freshness.js';
 
 export const World = {
   currentZone: null,
@@ -41,7 +40,7 @@ export const World = {
     this.currentAct.id = actId;
     
     // Use provided seed or derive deterministically from meta/run
-    const fallback = seedFromParts(State.meta.worldSeed || 0, 'ACT', actId, State.meta.runIndex || 0, State.data.config?.seedVersion ?? 1, State.data.config?.version ?? '0');
+    const fallback = seedFromParts(State.meta.worldSeed || 0, 'ACT', actId, State.meta.runIndex || 0, State.data.config?.version ?? '0');
     const actSeed = (typeof seed === 'number') ? (seed >>> 0) : (State.run?.seed ? (State.run.seed >>> 0) : fallback);
     this.currentAct.seed = (actSeed >>> 0);
     
@@ -58,44 +57,6 @@ export const World = {
     const depth = index + 1;
     const zoneSeed = MapGenerator.createZoneSeed(this.currentAct.seed, index);
 
-    // Layered seeds (deterministic streams per zone layer)
-    const zoneSeeds = {
-      zone: zoneSeed,
-      macro: seedFromParts(zoneSeed, 'MACRO'),
-      meso: seedFromParts(zoneSeed, 'MESO'),
-      micro: seedFromParts(zoneSeed, 'MICRO'),
-      mods: seedFromParts(zoneSeed, 'MODS'),
-      encounters: seedFromParts(zoneSeed, 'ENCOUNTERS'),
-      loot: seedFromParts(zoneSeed, 'LOOT')
-    };
-
-    // Freshness-punished macro picks: layout + backdrop
-    Freshness.ensure(State.meta, State.data.config?.freshness);
-    const rngMacro = new SeededRandom(zoneSeeds.macro);
-
-    const layoutOptions = [
-      { value: { id: 'OPEN' }, weight: 1.0 },
-      { value: { id: 'CLUTTERED' }, weight: 0.9 },
-      { value: { id: 'CORRIDOR' }, weight: 0.8 },
-      { value: { id: 'ARENA' }, weight: 0.7 },
-      { value: { id: 'CRAMPED' }, weight: 0.6 }
-    ];
-    const backdropOptions = [
-      { value: { id: 'DEEP_SPACE_A', variant: 0 }, weight: 1.0 },
-      { value: { id: 'DEEP_SPACE_B', variant: 1 }, weight: 1.0 },
-      { value: { id: 'NEBULA_A', variant: 2 }, weight: 0.8 },
-      { value: { id: 'NEBULA_B', variant: 3 }, weight: 0.8 }
-    ];
-
-    const layoutPick = Freshness.pick(rngMacro, layoutOptions, v => 'LAYOUT:' + v.id, State.meta, State.data.config?.freshness);
-    const backdropPick = Freshness.pick(rngMacro, backdropOptions, v => 'BACKDROP:' + v.id, State.meta, State.data.config?.freshness);
-
-    if (layoutPick?.key) Freshness.push(State.meta, layoutPick.key);
-    if (backdropPick?.key) Freshness.push(State.meta, backdropPick.key);
-
-    const layout = layoutPick?.value || { id: 'OPEN' };
-    const backdrop = backdropPick?.value || { id: 'DEEP_SPACE_A', variant: 0 };
-
     // Hybrid milestone unlocks (deterministic per run)
     const unlockSeed = seedFromParts(this.currentAct.seed, 'UNLOCK', depth);
     DepthRules.maybeUnlock(depth, this.currentAct, new SeededRandom(unlockSeed));
@@ -108,80 +69,21 @@ export const World = {
     const isBossZone = (depth % bossInterval) === 0;
 
     // Sample active modifiers for this zone (deterministic per zone)
-    const modsSeed = zoneSeeds.mods;
+    const modsSeed = seedFromParts(zoneSeed, 'MODS');
     const rngMods = new SeededRandom(modsSeed);
     const activeMods = DepthRules.sampleActive(depth, this.currentAct, rngMods);
 
-    // Per-zone act overrides (layout/backdrop) WITHOUT mutating base act config
-    const scaleRange = (v, mult) => {
-      if (Array.isArray(v) && v.length >= 2) return [Math.floor(v[0]*mult), Math.floor(v[1]*mult)];
-      if (typeof v === 'number') return Math.floor(v*mult);
-      return v;
-    };
-
-    const actForZone = {
-      ...this.currentAct,
-      generation: { ...(this.currentAct.generation || {}) },
-      parallax: { ...(this.currentAct.parallax || {}) }
-    };
-
-    // Layout influences geometry/densities (subtle, assets later do the heavy lifting)
-    switch (layout.id) {
-      case 'OPEN':
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 0.75;
-        actForZone.generation.width = scaleRange(actForZone.generation.width, 1.10);
-        actForZone.generation.height = scaleRange(actForZone.generation.height, 1.10);
-        break;
-      case 'CLUTTERED':
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 1.45;
-        break;
-      case 'CORRIDOR':
-        actForZone.generation.width = scaleRange(actForZone.generation.width, 1.25);
-        actForZone.generation.height = scaleRange(actForZone.generation.height, 0.85);
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 1.15;
-        break;
-      case 'ARENA':
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 0.60;
-        actForZone.generation.enemyDensity = (actForZone.generation.enemyDensity || 0.0005) * 1.10;
-        break;
-      case 'CRAMPED':
-        actForZone.generation.width = scaleRange(actForZone.generation.width, 0.75);
-        actForZone.generation.height = scaleRange(actForZone.generation.height, 0.75);
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 1.20;
-        break;
-    }
-
-    // Backdrop influences parallax palette (lightweight until real art arrives)
-    const bgPalettes = {
-      DEEP_SPACE_A: { bgColor: '#0a0a15' },
-      DEEP_SPACE_B: { bgColor: '#050a12' },
-      NEBULA_A: { bgColor: '#14051a' },
-      NEBULA_B: { bgColor: '#06101a' }
-    };
-    const pal = bgPalettes[backdrop.id] || null;
-    if (pal?.bgColor) actForZone.parallax.bgColor = pal.bgColor;
-
     if (isBossZone) {
-      this.currentZone = MapGenerator.generateBossZone(actForZone, zoneSeed, { depth, mods: activeMods, layout, backdrop, seeds: zoneSeeds });
+      this.currentZone = MapGenerator.generateBossZone(this.currentAct, zoneSeed, { depth, mods: activeMods });
     } else {
-      this.currentZone = MapGenerator.generate(actForZone, zoneSeed, { depth, mods: activeMods, layout, backdrop, seeds: zoneSeeds });
+      this.currentZone = MapGenerator.generate(this.currentAct, zoneSeed, { depth, mods: activeMods });
     }
 
     this.currentZone.depth = depth;
     this.currentZone.mods = activeMods;
-    this.currentZone.layout = layout;
-    this.currentZone.backdrop = backdrop;
-    this.currentZone.seeds = zoneSeeds;
-    this.currentZone.signature = `${this.currentAct.id}|${depth}|${layout.id}|${backdrop.id}|${activeMods.map(m => m.id || m).join(',')}`;
-
-    Freshness.push(State.meta, 'SIG:' + this.currentZone.signature);
-
-    if (State.data.config?.debug?.logZoneSummary) {
-      console.log('[ZONE]', { idx: index, depth, layout: layout.id, backdrop: backdrop.id, mods: activeMods.map(m => m.id || m), signature: this.currentZone.signature });
-    }
 
     // Deterministic encounter RNG stream for this zone (patrol angles, etc.)
-    this.rngEncounters = new SeededRandom(zoneSeeds.encounters);
+    this.rngEncounters = new SeededRandom(seedFromParts(zoneSeed, 'ENCOUNTERS'));
 
     // Build spatial hash for fast proximity spawning
     const cellSize = Math.max(200, this.spawnRadius);

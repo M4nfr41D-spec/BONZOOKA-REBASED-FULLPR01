@@ -96,7 +96,7 @@
       "bossIntensity": 10
     }
   },
-  "seedVersion": 3,
+  "seedVersion": 1,
   "depthScaling": {
     "pivot": 50,
     "early": {
@@ -115,13 +115,5 @@
       "xpA": 0.018,
       "xpP": 1.15
     }
-  },
-  "freshness": {
-    "window": 8,
-    "penaltyBase": 0.25
-  },
-  "debug": {
-    "devHotkeys": true,
-    "logZoneSummary": true
   }
 }

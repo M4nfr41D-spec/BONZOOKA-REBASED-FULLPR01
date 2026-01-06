@@ -10,7 +10,6 @@ import { Enemies } from './Enemies.js';
 import { Player } from './Player.js';
 import { SeededRandom } from './world/SeededRandom.js';
 import { seedFromParts } from './world/SeedUtil.js';
-import { seedFromParts } from './world/SeedUtil.js';
 
 export const Bullets = {
   // Spawn a new bullet

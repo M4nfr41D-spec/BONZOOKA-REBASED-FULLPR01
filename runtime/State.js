@@ -62,13 +62,6 @@ export const State = {
     worldSeed: 0,
     runIndex: 0,
 
-    // Freshness memory (anti-repetition)
-    freshness: {
-      window: 8,
-      penaltyBase: 0.25,
-      recent: []
-    },
-
     // Endless depth progression (saved)
     depth: {
       bestDepth: 1,
