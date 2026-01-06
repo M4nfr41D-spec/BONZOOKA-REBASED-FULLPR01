@@ -12,18 +12,39 @@ export const Pickups = {
   // Update all pickups
   update(dt, canvas) {
     const p = State.player;
+    const zone = State.world?.currentZone;
+    const inWorld = !!zone;
     
     for (let i = State.pickups.length - 1; i >= 0; i--) {
       const pk = State.pickups[i];
-      
-      // Gravity
-      pk.vy += 100 * dt;
-      pk.x += pk.vx * dt;
-      pk.y += pk.vy * dt;
-      
-      // Friction
-      pk.vx *= 0.98;
-      pk.vy *= 0.98;
+
+      // Movement
+      if (inWorld) {
+        // Exploration mode: no gravity (space), strong damping to remove drift
+        pk.x += pk.vx * dt;
+        pk.y += pk.vy * dt;
+
+        // Damping (frame-rate independent)
+        const damp = Math.pow(0.12, dt); // ~88% damp per second
+        pk.vx *= damp;
+        pk.vy *= damp;
+
+        if (Math.abs(pk.vx) < 2) pk.vx = 0;
+        if (Math.abs(pk.vy) < 2) pk.vy = 0;
+
+        // Keep within zone bounds
+        const margin = 20;
+        pk.x = Math.max(margin, Math.min(zone.width - margin, pk.x));
+        pk.y = Math.max(margin, Math.min(zone.height - margin, pk.y));
+      } else {
+        // Wave mode: gravity + bounce floor
+        pk.vy += 100 * dt;
+        pk.x += pk.vx * dt;
+        pk.y += pk.vy * dt;
+
+        pk.vx *= 0.98;
+        pk.vy *= 0.98;
+      }
       
       // Lifetime
       pk.life -= dt;
@@ -37,7 +58,7 @@ export const Pickups = {
       const dy = p.y - pk.y;
       const dist = Math.hypot(dx, dy);
       
-      if (dist < p.pickupRadius) {
+      if (dist > 0.001 && dist < p.pickupRadius) {
         const pull = (p.pickupRadius - dist) / p.pickupRadius * 500;
         pk.x += (dx / dist) * pull * dt;
         pk.y += (dy / dist) * pull * dt;
@@ -48,12 +69,15 @@ export const Pickups = {
         this.collect(pk);
         State.pickups.splice(i, 1);
         continue;
-      }      // Keep on screen (world mode uses zone bounds)
-      const zone = State.world?.currentZone;
-      const floorY = zone ? (zone.height - 20) : (canvas.height - 20);
-      if (pk.y > floorY) {
-        pk.y = floorY;
-        pk.vy = -Math.abs(pk.vy) * 0.5;
+      }
+
+      // Floor bounce (wave mode only)
+      if (!inWorld) {
+        const floorY = canvas.height - 20;
+        if (pk.y > floorY) {
+          pk.y = floorY;
+          pk.vy = -Math.abs(pk.vy) * 0.5;
+        }
       }
     }
   },
@@ -74,7 +98,7 @@ export const Pickups = {
         break;
         
       case 'item':
-        const item = Items.generateRandom(pickup.rarity, pickup.itemSeed);
+        const item = Items.generateRandom(pickup.rarity);
         if (item) {
           const added = Items.addToStash(item);
           if (added) {

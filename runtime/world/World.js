@@ -11,9 +11,6 @@ import { MapGenerator } from './MapGenerator.js';
 import { Camera } from './Camera.js';
 import { SeededRandom } from './SeededRandom.js';
 import { DepthRules } from './DepthRules.js';
-import { SpawnGrid } from './SpawnGrid.js';
-import { seedFromParts } from './SeedUtil.js';
-import { Freshness } from './Freshness.js';
 
 export const World = {
   currentZone: null,
@@ -24,9 +21,6 @@ export const World = {
   spawnRadius: 600,      // Distance to trigger spawn
   despawnRadius: 1200,   // Distance to despawn (performance)
   activeEnemies: [],     // Currently active enemies from spawns
-  enemyGrid: null,
-  eliteGrid: null,
-  rngEncounters: null,
   
   // Initialize world with act config
   async init(actId, seed = null) {
@@ -40,10 +34,9 @@ export const World = {
     this.currentAct = actConfig;
     this.currentAct.id = actId;
     
-    // Use provided seed or derive deterministically from meta/run
-    const fallback = seedFromParts(State.meta.worldSeed || 0, 'ACT', actId, State.meta.runIndex || 0, State.data.config?.seedVersion ?? 1, State.data.config?.version ?? '0');
-    const actSeed = (typeof seed === 'number') ? (seed >>> 0) : (State.run?.seed ? (State.run.seed >>> 0) : fallback);
-    this.currentAct.seed = (actSeed >>> 0);
+    // Use provided seed or generate from act name
+    const actSeed = seed || SeededRandom.fromString(actId + '_' + Date.now());
+    this.currentAct.seed = actSeed;
     
     // Generate first zone
     this.zoneIndex = 0;
@@ -58,47 +51,8 @@ export const World = {
     const depth = index + 1;
     const zoneSeed = MapGenerator.createZoneSeed(this.currentAct.seed, index);
 
-    // Layered seeds (deterministic streams per zone layer)
-    const zoneSeeds = {
-      zone: zoneSeed,
-      macro: seedFromParts(zoneSeed, 'MACRO'),
-      meso: seedFromParts(zoneSeed, 'MESO'),
-      micro: seedFromParts(zoneSeed, 'MICRO'),
-      mods: seedFromParts(zoneSeed, 'MODS'),
-      encounters: seedFromParts(zoneSeed, 'ENCOUNTERS'),
-      loot: seedFromParts(zoneSeed, 'LOOT')
-    };
-
-    // Freshness-punished macro picks: layout + backdrop
-    Freshness.ensure(State.meta, State.data.config?.freshness);
-    const rngMacro = new SeededRandom(zoneSeeds.macro);
-
-    const layoutOptions = [
-      { value: { id: 'OPEN' }, weight: 1.0 },
-      { value: { id: 'CLUTTERED' }, weight: 0.9 },
-      { value: { id: 'CORRIDOR' }, weight: 0.8 },
-      { value: { id: 'ARENA' }, weight: 0.7 },
-      { value: { id: 'CRAMPED' }, weight: 0.6 }
-    ];
-    const backdropOptions = [
-      { value: { id: 'DEEP_SPACE_A', variant: 0 }, weight: 1.0 },
-      { value: { id: 'DEEP_SPACE_B', variant: 1 }, weight: 1.0 },
-      { value: { id: 'NEBULA_A', variant: 2 }, weight: 0.8 },
-      { value: { id: 'NEBULA_B', variant: 3 }, weight: 0.8 }
-    ];
-
-    const layoutPick = Freshness.pick(rngMacro, layoutOptions, v => 'LAYOUT:' + v.id, State.meta, State.data.config?.freshness);
-    const backdropPick = Freshness.pick(rngMacro, backdropOptions, v => 'BACKDROP:' + v.id, State.meta, State.data.config?.freshness);
-
-    if (layoutPick?.key) Freshness.push(State.meta, layoutPick.key);
-    if (backdropPick?.key) Freshness.push(State.meta, backdropPick.key);
-
-    const layout = layoutPick?.value || { id: 'OPEN' };
-    const backdrop = backdropPick?.value || { id: 'DEEP_SPACE_A', variant: 0 };
-
-    // Hybrid milestone unlocks (deterministic per run)
-    const unlockSeed = seedFromParts(this.currentAct.seed, 'UNLOCK', depth);
-    DepthRules.maybeUnlock(depth, this.currentAct, new SeededRandom(unlockSeed));
+    // Hybrid milestone unlocks (weighted randomness)
+    DepthRules.maybeUnlock(depth, this.currentAct);
     DepthRules.recordDepth(depth);
 
     // Boss interval: default to act.zones (number) or 4
@@ -107,88 +61,17 @@ export const World = {
       : 4;
     const isBossZone = (depth % bossInterval) === 0;
 
-    // Sample active modifiers for this zone (deterministic per zone)
-    const modsSeed = zoneSeeds.mods;
-    const rngMods = new SeededRandom(modsSeed);
-    const activeMods = DepthRules.sampleActive(depth, this.currentAct, rngMods);
-
-    // Per-zone act overrides (layout/backdrop) WITHOUT mutating base act config
-    const scaleRange = (v, mult) => {
-      if (Array.isArray(v) && v.length >= 2) return [Math.floor(v[0]*mult), Math.floor(v[1]*mult)];
-      if (typeof v === 'number') return Math.floor(v*mult);
-      return v;
-    };
-
-    const actForZone = {
-      ...this.currentAct,
-      generation: { ...(this.currentAct.generation || {}) },
-      parallax: { ...(this.currentAct.parallax || {}) }
-    };
-
-    // Layout influences geometry/densities (subtle, assets later do the heavy lifting)
-    switch (layout.id) {
-      case 'OPEN':
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 0.75;
-        actForZone.generation.width = scaleRange(actForZone.generation.width, 1.10);
-        actForZone.generation.height = scaleRange(actForZone.generation.height, 1.10);
-        break;
-      case 'CLUTTERED':
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 1.45;
-        break;
-      case 'CORRIDOR':
-        actForZone.generation.width = scaleRange(actForZone.generation.width, 1.25);
-        actForZone.generation.height = scaleRange(actForZone.generation.height, 0.85);
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 1.15;
-        break;
-      case 'ARENA':
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 0.60;
-        actForZone.generation.enemyDensity = (actForZone.generation.enemyDensity || 0.0005) * 1.10;
-        break;
-      case 'CRAMPED':
-        actForZone.generation.width = scaleRange(actForZone.generation.width, 0.75);
-        actForZone.generation.height = scaleRange(actForZone.generation.height, 0.75);
-        actForZone.generation.obstacleDensity = (actForZone.generation.obstacleDensity || 0.0002) * 1.20;
-        break;
-    }
-
-    // Backdrop influences parallax palette (lightweight until real art arrives)
-    const bgPalettes = {
-      DEEP_SPACE_A: { bgColor: '#0a0a15' },
-      DEEP_SPACE_B: { bgColor: '#050a12' },
-      NEBULA_A: { bgColor: '#14051a' },
-      NEBULA_B: { bgColor: '#06101a' }
-    };
-    const pal = bgPalettes[backdrop.id] || null;
-    if (pal?.bgColor) actForZone.parallax.bgColor = pal.bgColor;
+    // Sample active modifiers for this zone
+    const activeMods = DepthRules.sampleActive(depth, this.currentAct);
 
     if (isBossZone) {
-      this.currentZone = MapGenerator.generateBossZone(actForZone, zoneSeed, { depth, mods: activeMods, layout, backdrop, seeds: zoneSeeds });
+      this.currentZone = MapGenerator.generateBossZone(this.currentAct, zoneSeed, { depth, mods: activeMods });
     } else {
-      this.currentZone = MapGenerator.generate(actForZone, zoneSeed, { depth, mods: activeMods, layout, backdrop, seeds: zoneSeeds });
+      this.currentZone = MapGenerator.generate(this.currentAct, zoneSeed, { depth, mods: activeMods });
     }
 
     this.currentZone.depth = depth;
     this.currentZone.mods = activeMods;
-    this.currentZone.layout = layout;
-    this.currentZone.backdrop = backdrop;
-    this.currentZone.seeds = zoneSeeds;
-    this.currentZone.signature = `${this.currentAct.id}|${depth}|${layout.id}|${backdrop.id}|${activeMods.map(m => m.id || m).join(',')}`;
-
-    Freshness.push(State.meta, 'SIG:' + this.currentZone.signature);
-
-    if (State.data.config?.debug?.logZoneSummary) {
-      console.log('[ZONE]', { idx: index, depth, layout: layout.id, backdrop: backdrop.id, mods: activeMods.map(m => m.id || m), signature: this.currentZone.signature });
-    }
-
-    // Deterministic encounter RNG stream for this zone (patrol angles, etc.)
-    this.rngEncounters = new SeededRandom(zoneSeeds.encounters);
-
-    // Build spatial hash for fast proximity spawning
-    const cellSize = Math.max(200, this.spawnRadius);
-    this.enemyGrid = new SpawnGrid(cellSize);
-    this.enemyGrid.build(this.currentZone.enemySpawns || []);
-    this.eliteGrid = new SpawnGrid(cellSize);
-    this.eliteGrid.build(this.currentZone.eliteSpawns || []);
 
     this.zoneIndex = index;
     this.activeEnemies = [];
@@ -201,19 +84,14 @@ export const World = {
     State.player.vx = 0;
     State.player.vy = 0;
 
-    // Snap camera to player (clamped to zone bounds to prevent initial camera drift)
+    // Snap camera to player
     const canvas = document.getElementById('gameCanvas');
     const screenW = canvas?.width || 800;
     const screenH = canvas?.height || 600;
-    const mapW = this.currentZone.width || 2000;
-    const mapH = this.currentZone.height || 2000;
-
-    const rawX = State.player.x - screenW / 2;
-    const rawY = State.player.y - screenH / 2;
-    const clampedX = Math.max(0, Math.min(mapW - screenW, rawX));
-    const clampedY = Math.max(0, Math.min(mapH - screenH, rawY));
-
-    Camera.snapTo(clampedX, clampedY);
+    Camera.snapTo(
+      State.player.x - screenW / 2,
+      State.player.y - screenH / 2
+    );
 
     // Reset zone-combat counters
     this.spawnedEnemyCount = 0;
@@ -227,40 +105,47 @@ export const World = {
     
     const player = State.player;
     
-    // Check enemy spawns (spatial hash)
-    const enemyCandidates = (this.enemyGrid ? this.enemyGrid.query(player.x, player.y, this.spawnRadius) : this.currentZone.enemySpawns);
-    for (const spawn of enemyCandidates) {
+    // Check enemy spawns
+    for (const spawn of this.currentZone.enemySpawns) {
       if (spawn.killed) continue;
-
+      
       const dist = Math.hypot(player.x - spawn.x, player.y - spawn.y);
-
+      
       // Spawn if player close
       if (!spawn.active && dist < this.spawnRadius) {
         this.spawnEnemy(spawn, false);
       }
-    }
+      
+      // Despawn if too far (and not engaged)
+      if (spawn.active && dist > this.despawnRadius) {
+        // Only despawn when the enemy is effectively "idle" at home.
+        // If it was engaged, force a return so it doesn't vanish mid-behavior.
+        const enemy = State.enemies.find(e => e.id === spawn.enemyId);
+        if (enemy) {
+          if (enemy.aiState === 'aggro') enemy.aiState = 'return';
 
-    // Despawn active enemies if too far
-    for (const enemy of [...this.activeEnemies]) {
-      if (!enemy || enemy.dead || !enemy.spawnRef) continue;
-      const dist = Math.hypot(player.x - enemy.x, player.y - enemy.y);
-      if (enemy.spawnRef.active && dist > this.despawnRadius) {
-        this.despawnEnemy(enemy.spawnRef);
+          const distHome = Math.hypot(enemy.x - spawn.x, enemy.y - spawn.y);
+          const homeThreshold = enemy.returnThreshold || 60;
+          if (enemy.aiState !== 'aggro' && distHome <= homeThreshold) {
+            this.despawnEnemy(spawn);
+          }
+        } else {
+          this.despawnEnemy(spawn);
+        }
       }
     }
-
-    // Check elite spawns (spatial hash)
-    const eliteCandidates = (this.eliteGrid ? this.eliteGrid.query(player.x, player.y, this.spawnRadius) : this.currentZone.eliteSpawns);
-    for (const spawn of eliteCandidates) {
+    
+    // Check elite spawns
+    for (const spawn of this.currentZone.eliteSpawns) {
       if (spawn.killed) continue;
-
+      
       const dist = Math.hypot(player.x - spawn.x, player.y - spawn.y);
-
+      
       if (!spawn.active && dist < this.spawnRadius) {
         this.spawnEnemy(spawn, true);
       }
     }
-
+    
     // Check boss spawn
     if (this.currentZone.bossSpawn && !this.currentZone.bossSpawn.killed) {
       const spawn = this.currentZone.bossSpawn;
@@ -289,52 +174,102 @@ export const World = {
       }
     }
     
-    // Update patrol behavior for active enemies
-    this.updateEnemyPatrols(dt);
+    // Enemy AI (patrol/aggro/return) is handled in Enemies.update() for exploration mode.
   },
+  
   // Spawn regular enemy
   spawnEnemy(spawn, isElite = false) {
     const { Enemies } = State.modules;
-
-    // Create enemy (combat scaling handled in Enemies.spawn via depth/world scaling)
+    
+    // Calculate level based on player
+    const playerLvl = State.meta.level || 1;
+    let enemyLvl;
+    
+    if (isElite) {
+      enemyLvl = playerLvl; // Elite = same level
+    } else {
+      enemyLvl = Math.max(1, playerLvl - 1 - Math.floor(Math.random() * 2));
+    }
+    
+    // Create enemy
     const enemy = Enemies.spawn(spawn.type, spawn.x, spawn.y, isElite, false);
     enemy.spawnRef = spawn;
+    enemy.level = enemyLvl;
 
-    // Display level from depth (exploration) or player level fallback
-    const depth = State.world?.currentZone?.depth || (State.meta.level || 1);
-    enemy.level = depth;
+    // World AI baseline (patrol -> aggro -> return)
+    const patrolType = spawn.patrol || (isElite ? 'circle' : 'wander');
+    const patrolRadius = spawn.patrolRadius || (isElite ? 140 : 110);
 
-    // Patrol setup (deterministic per zone if rngEncounters is present)
-    enemy.patrol = spawn.patrol;
-    enemy.patrolRadius = spawn.patrolRadius;
-    enemy.patrolOrigin = { x: spawn.x, y: spawn.y };
-    const r = this.rngEncounters ? this.rngEncounters.next() : Math.random();
-    enemy.patrolAngle = r * Math.PI * 2;
+    enemy.homeX = spawn.x;
+    enemy.homeY = spawn.y;
+    enemy.aiState = 'patrol';
+    enemy.patrol = patrolType;
+    enemy.patrolRadius = patrolRadius;
+    enemy.patrolAngle = Math.random() * Math.PI * 2;
+    enemy.patrolDir = Math.random() < 0.5 ? -1 : 1;
+    enemy.patrolTimer = 0;
+    enemy.wanderTarget = null;
+    enemy.wanderTimer = 0;
 
+    // Engagement envelope (tuned for exploration)
+    enemy.aggroRange = spawn.aggroRange || (isElite ? 520 : 420);
+    enemy.attackRange = spawn.attackRange || enemy.aggroRange;
+    enemy.disengageRange = spawn.disengageRange || enemy.aggroRange * 1.65;
+    enemy.leashRange = spawn.leashRange || Math.max(enemy.aggroRange * 2.2, patrolRadius * 5);
+    enemy.returnThreshold = Math.max(40, enemy.size * 1.2);
+    
+    // Scale stats by level difference
+    const levelScale = Math.pow(1.1, enemyLvl - 1);
+    enemy.hp *= levelScale;
+    enemy.maxHP *= levelScale;
+    enemy.damage *= levelScale;
+    enemy.xp = Math.floor(enemy.xp * levelScale);
+    
     spawn.active = true;
     spawn.enemyId = enemy.id;
-
+    
     this.activeEnemies.push(enemy);
   },
+  
   // Spawn boss
   spawnBoss(spawn) {
     const { Enemies } = State.modules;
-
+    
+    const playerLvl = State.meta.level || 1;
+    const bossLvl = playerLvl + Math.floor(Math.random() * 6); // +0 to +5
+    
     const enemy = Enemies.spawn(spawn.type, spawn.x, spawn.y, false, true);
     enemy.spawnRef = spawn;
+    enemy.level = bossLvl;
 
-    const depth = State.world?.currentZone?.depth || (State.meta.level || 1);
-    enemy.level = depth;
+    // Boss AI baseline
+    enemy.homeX = spawn.x;
+    enemy.homeY = spawn.y;
+    enemy.aiState = 'patrol';
+    enemy.patrol = spawn.patrol || 'circle';
+    enemy.patrolRadius = spawn.patrolRadius || 220;
+    enemy.patrolAngle = Math.random() * Math.PI * 2;
+    enemy.patrolDir = 1;
+    enemy.patrolTimer = 0;
 
+    enemy.aggroRange = spawn.aggroRange || 750;
+    enemy.attackRange = spawn.attackRange || enemy.aggroRange;
+    enemy.disengageRange = spawn.disengageRange || enemy.aggroRange * 1.5;
+    enemy.leashRange = spawn.leashRange || Math.max(enemy.aggroRange * 2.0, enemy.patrolRadius * 6);
+    enemy.returnThreshold = Math.max(60, enemy.size * 1.2);
+
+    // Scale boss
+    const levelScale = Math.pow(1.15, bossLvl - 1);
+    enemy.hp *= levelScale;
+    enemy.maxHP *= levelScale;
+    enemy.damage *= levelScale;
+    
     spawn.active = true;
     spawn.enemyId = enemy.id;
-
+    
     // Announce boss
     State.ui?.showAnnouncement?.(`⚠️ ${enemy.name || 'BOSS'} APPEARS!`);
-
-    this.activeEnemies.push(enemy);
   },
-
   
   // Despawn enemy (too far)
   despawnEnemy(spawn) {

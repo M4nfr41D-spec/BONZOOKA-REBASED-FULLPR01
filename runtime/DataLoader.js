@@ -72,27 +72,7 @@ export function getData(path) {
 
 // Get config value with fallback
 export function getConfig(key, fallback = null) {
-  const cfg = State.data.config;
-  if (!cfg) return fallback;
-
-  // Exact key first (supports legacy flat keys)
-  if (Object.prototype.hasOwnProperty.call(cfg, key)) return cfg[key];
-
-  // Dot-path support: "progression.baseXP"
-  if (typeof key === 'string' && key.includes('.')) {
-    const parts = key.split('.');
-    let cur = cfg;
-    for (const p of parts) {
-      if (cur && typeof cur === 'object' && Object.prototype.hasOwnProperty.call(cur, p)) {
-        cur = cur[p];
-      } else {
-        return fallback;
-      }
-    }
-    return (cur ?? fallback);
-  }
-
-  return (cfg[key] ?? fallback);
+  return State.data.config?.[key] ?? fallback;
 }
 
 // Get all items as flat array
@@ -123,16 +103,20 @@ export function getItemData(itemId) {
 }
 
 // Get random affix for rarity
-export function getRandomAffix(allAffixes, rng = null) {
-  if (!allAffixes || allAffixes.length === 0) return null;
-  // rng can be SeededRandom-like with int(min,max) or next()
-  if (rng && typeof rng.int === 'function') {
-    return allAffixes[rng.int(0, allAffixes.length - 1)];
+export function getRandomAffix(rarity, type = 'prefix') {
+  const affixes = State.data.affixes?.[type === 'prefix' ? 'prefixes' : 'suffixes'];
+  if (!affixes) return null;
+  
+  const allAffixes = [];
+  for (const category of Object.values(affixes)) {
+    for (const affix of category) {
+      if (affix.tiers.includes(rarity)) {
+        allAffixes.push(affix);
+      }
+    }
   }
-  if (rng && typeof rng.next === 'function') {
-    const idx = Math.floor(rng.next() * allAffixes.length);
-    return allAffixes[Math.max(0, Math.min(allAffixes.length - 1, idx))];
-  }
+  
+  if (allAffixes.length === 0) return null;
   return allAffixes[Math.floor(Math.random() * allAffixes.length)];
 }
 

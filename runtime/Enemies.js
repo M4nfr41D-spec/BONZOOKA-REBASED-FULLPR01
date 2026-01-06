@@ -18,27 +18,24 @@ export const Enemies = {
       return enemy;
     }
     
-    const scale = this.getWorldScale();
-    const hpScale = scale.hpScale;
-    const dmgScale = scale.dmgScale;
-    const xpScale = scale.xpScale;
+    const waveScale = this.getWaveScale();
     const cfg = State.data.config?.waves || {};
     const eliteMult = cfg.eliteHPMult || 2.5;
     const bossMult = cfg.bossHPMult || 8;
     
     const enemy = {
-      id: 'e_' + ((State.run.enemySerial = (State.run.enemySerial || 0) + 1) >>> 0).toString(36),
+      id: 'e_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
       type: type,
       x: x,
       y: y,
       vx: 0,
       vy: 0,
-      hp: enemyData.hp * hpScale * (isElite ? eliteMult : 1) * (isBoss ? bossMult : 1),
-      maxHP: enemyData.hp * hpScale * (isElite ? eliteMult : 1) * (isBoss ? bossMult : 1),
-      damage: enemyData.damage * dmgScale,
+      hp: enemyData.hp * waveScale * (isElite ? eliteMult : 1) * (isBoss ? bossMult : 1),
+      maxHP: enemyData.hp * waveScale * (isElite ? eliteMult : 1) * (isBoss ? bossMult : 1),
+      damage: enemyData.damage * waveScale,
       speed: enemyData.speed,
       score: enemyData.score * (isElite ? 3 : 1) * (isBoss ? 10 : 1),
-      xp: Math.floor(enemyData.xp * xpScale * (isElite ? 2 : 1) * (isBoss ? 5 : 1)),
+      xp: enemyData.xp * (isElite ? 2 : 1) * (isBoss ? 5 : 1),
       color: isElite ? '#ffaa00' : (isBoss ? '#ff3355' : enemyData.color),
       size: (isBoss ? 50 : (isElite ? 30 : 22)),
       isElite: isElite,
@@ -139,29 +136,197 @@ export const Enemies = {
   
   // Update all enemies
   update(dt, canvas) {
+    const zone = State.world?.currentZone;
+    const inWorld = !!zone;
+
     for (const e of State.enemies) {
       if (e.dead) continue;
-      
-      e.patternTime += dt;
-      this.applyPattern(e, dt, canvas);
-      
-      e.x += e.vx * dt;
-      e.y += e.vy * dt;      // Off screen check (wave mode only)
-      if (!State.world?.currentZone) {
+
+      if (inWorld) {
+        this.updateExplorationAI(e, dt, zone);
+
+        // Integrate velocity in world coords
+        e.x += e.vx * dt;
+        e.y += e.vy * dt;
+
+        // Clamp to zone bounds (prevents runaway drift)
+        const margin = Math.max(30, e.size * 1.2);
+        e.x = Math.max(margin, Math.min(zone.width - margin, e.x));
+        e.y = Math.max(margin, Math.min(zone.height - margin, e.y));
+
+        // Combat behavior (aggro only)
+        this.updateExplorationShooting(e, dt);
+      } else {
+        // Wave mode
+        e.patternTime += dt;
+        this.applyPattern(e, dt, canvas);
+
+        e.x += e.vx * dt;
+        e.y += e.vy * dt;
+
+        // Off screen check (wave mode only)
         if (e.y > canvas.height + 100 || e.x < -100 || e.x > canvas.width + 100) {
           e.dead = true;
           continue;
         }
-      }
-      // Shooting
-      e.shootTimer -= dt;
-      if (e.shootTimer <= 0 && e.y > 30 && e.y < canvas.height * 0.6) {
-        e.shootTimer = e.shootInterval + Math.random();
-        this.shoot(e);
+
+        // Shooting (wave mode constraint)
+        e.shootTimer -= dt;
+        if (e.shootTimer <= 0 && e.y > 30 && e.y < canvas.height * 0.6) {
+          e.shootTimer = e.shootInterval + Math.random();
+          this.shoot(e);
+        }
       }
     }
     
     State.enemies = State.enemies.filter(e => !e.dead);
+  },
+
+  // Exploration AI: patrol at spawn point, aggro in range, return when player leaves
+  updateExplorationAI(e, dt, zone) {
+    const p = State.player;
+
+    // Lazy init for safety (should be set in World.spawnEnemy)
+    if (e.homeX == null || e.homeY == null) {
+      e.homeX = e.x;
+      e.homeY = e.y;
+    }
+    if (!e.aiState) e.aiState = 'patrol';
+    if (!e.patrol) e.patrol = 'circle';
+    if (!e.patrolRadius) e.patrolRadius = 120;
+    if (e.patrolAngle == null) e.patrolAngle = Math.random() * Math.PI * 2;
+    if (!e.patrolDir) e.patrolDir = Math.random() < 0.5 ? -1 : 1;
+    if (e.patrolTimer == null) e.patrolTimer = 0;
+    if (!e.aggroRange) e.aggroRange = e.isBoss ? 750 : (e.isElite ? 520 : 420);
+    if (!e.attackRange) e.attackRange = e.aggroRange;
+    if (!e.disengageRange) e.disengageRange = e.aggroRange * 1.65;
+    if (!e.leashRange) e.leashRange = Math.max(e.aggroRange * 2.2, e.patrolRadius * 5);
+    if (!e.returnThreshold) e.returnThreshold = Math.max(40, e.size * 1.2);
+    if (e.wanderTimer == null) e.wanderTimer = 0;
+
+    e.patrolTimer += dt;
+
+    const dxP = p.x - e.x;
+    const dyP = p.y - e.y;
+    const distP = Math.hypot(dxP, dyP);
+    const dxH = e.homeX - e.x;
+    const dyH = e.homeY - e.y;
+    const distH = Math.hypot(dxH, dyH);
+
+    // State transitions
+    if (distP <= e.aggroRange) {
+      e.aiState = 'aggro';
+    } else if (e.aiState === 'aggro' && (distP > e.disengageRange || distH > e.leashRange)) {
+      e.aiState = 'return';
+    } else if (e.aiState === 'return' && distH <= e.returnThreshold) {
+      e.aiState = 'patrol';
+      e.vx = 0;
+      e.vy = 0;
+    }
+
+    // Movement
+    const patrolSpeed = e.speed * (e.isBoss ? 0.40 : 0.32);
+    const returnSpeed = e.speed * (e.isBoss ? 0.85 : 0.70);
+    const chaseSpeed = e.speed * (e.isBoss ? 1.05 : (e.isElite ? 0.95 : 0.90));
+
+    let tx = e.x;
+    let ty = e.y;
+    let desiredSpeed = patrolSpeed;
+
+    if (e.aiState === 'patrol') {
+      switch (e.patrol) {
+        case 'circle': {
+          e.patrolAngle += dt * 0.9 * e.patrolDir;
+          tx = e.homeX + Math.cos(e.patrolAngle) * e.patrolRadius;
+          ty = e.homeY + Math.sin(e.patrolAngle) * e.patrolRadius;
+          break;
+        }
+        case 'line': {
+          e.patrolAngle += dt * 1.1 * e.patrolDir;
+          tx = e.homeX + Math.sin(e.patrolAngle) * e.patrolRadius;
+          ty = e.homeY + Math.sin(e.patrolAngle * 0.5) * (e.patrolRadius * 0.25);
+          break;
+        }
+        case 'wander': {
+          e.wanderTimer -= dt;
+          if (!e.wanderTarget || e.wanderTimer <= 0) {
+            const a = Math.random() * Math.PI * 2;
+            const r = Math.random() * e.patrolRadius;
+            e.wanderTarget = {
+              x: e.homeX + Math.cos(a) * r,
+              y: e.homeY + Math.sin(a) * r
+            };
+            e.wanderTimer = 1.2 + Math.random() * 2.2;
+          }
+          tx = e.wanderTarget.x;
+          ty = e.wanderTarget.y;
+          break;
+        }
+        case 'static':
+        default: {
+          // Slight hover-bob without net drift
+          tx = e.homeX + Math.sin(e.patrolTimer * 1.7) * 12;
+          ty = e.homeY + Math.cos(e.patrolTimer * 1.3) * 10;
+          break;
+        }
+      }
+    } else if (e.aiState === 'return') {
+      tx = e.homeX;
+      ty = e.homeY;
+      desiredSpeed = returnSpeed;
+    } else if (e.aiState === 'aggro') {
+      desiredSpeed = chaseSpeed;
+
+      // Patrol-like spaceship behavior: approach, then strafe/orbit
+      const orbitDist = e.isBoss ? 260 : (e.isElite ? 200 : 170);
+      if (distP > 0.001) {
+        const ux = dxP / distP;
+        const uy = dyP / distP;
+        const px = -uy;
+        const py = ux;
+
+        // Too close -> back off
+        const minDist = e.size * 2.6;
+        const tooClose = distP < minDist;
+
+        const orbitBias = distP < orbitDist ? 1.0 : 0.45;
+        const jitter = Math.sin(e.patrolTimer * 1.6) * 0.25;
+
+        const dirX = (tooClose ? -ux : ux) + px * (orbitBias * e.patrolDir) + px * jitter;
+        const dirY = (tooClose ? -uy : uy) + py * (orbitBias * e.patrolDir) + py * jitter;
+        const d = Math.hypot(dirX, dirY) || 1;
+
+        e.vx = (dirX / d) * desiredSpeed;
+        e.vy = (dirY / d) * desiredSpeed;
+        return;
+      }
+    }
+
+    // Steer towards target (patrol/return)
+    const dx = tx - e.x;
+    const dy = ty - e.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 2) {
+      e.vx = (dx / dist) * desiredSpeed;
+      e.vy = (dy / dist) * desiredSpeed;
+    } else {
+      e.vx *= 0.85;
+      e.vy *= 0.85;
+    }
+  },
+
+  updateExplorationShooting(e, dt) {
+    if (e.aiState !== 'aggro') return;
+    const p = State.player;
+    const dist = Math.hypot(p.x - e.x, p.y - e.y);
+    if (dist > e.attackRange) return;
+
+    e.shootTimer -= dt;
+    if (e.shootTimer <= 0) {
+      // Light jitter to avoid perfectly deterministic bullet streams
+      e.shootTimer = e.shootInterval + Math.random() * 0.35;
+      this.shoot(e);
+    }
   },
   
   // Apply movement pattern

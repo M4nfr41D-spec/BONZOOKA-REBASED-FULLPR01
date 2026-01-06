@@ -1,2 +1,1 @@
-BONZOOKAA BUILD v4.0.1-bootid
-Generated: 2026-01-06T00:32:35.800415Z
+v4.0.2-startfix

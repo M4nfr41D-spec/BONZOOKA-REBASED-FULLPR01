@@ -56,7 +56,7 @@ export const DepthRules = {
   },
 
   // Unlock new rule at milestones using weighted randomness (B)
-  maybeUnlock(depth, actConfig = null, rng = null) {
+  maybeUnlock(depth, actConfig = null) {
     this.ensureMeta();
 
     const last = State.meta.depth.lastUnlockAt || 0;
@@ -77,14 +77,14 @@ export const DepthRules = {
       return null;
     }
 
-    const picked = this.weightedPick(candidates, rng);
+    const picked = this.weightedPick(candidates);
     State.meta.depth.unlocked.push(picked.id);
     State.meta.depth.lastUnlockAt = milestone;
     return picked.id;
   },
 
   // Sample active modifiers for this zone from unlocked pool + baseline
-  sampleActive(depth, actConfig = null, rng = null) {
+  sampleActive(depth, actConfig = null) {
     this.ensureMeta();
 
     const pool = (actConfig && actConfig.modifiers && Array.isArray(actConfig.modifiers.pool))
@@ -106,21 +106,21 @@ export const DepthRules = {
     const picked = [];
     const used = new Set();
 
-    // If rng is provided, modifier sampling is deterministic for the zone/run
+    // Without a seeded RNG here: use Math.random for variety between runs
     for (let i = 0; i < slots; i++) {
       const cand = available.filter(m => !used.has(m.id));
       if (cand.length === 0) break;
-      const p = this.weightedPick(cand, rng);
+      const p = this.weightedPick(cand);
       picked.push(p.id);
       used.add(p.id);
     }
     return picked;
   },
 
-  weightedPick(list, rng = null) {
+  weightedPick(list) {
     let total = 0;
     for (const it of list) total += (it.weight ?? 1);
-    let r = (rng ? rng.next() : Math.random()) * total;
+    let r = Math.random() * total;
     for (const it of list) {
       r -= (it.weight ?? 1);
       if (r <= 0) return it;
